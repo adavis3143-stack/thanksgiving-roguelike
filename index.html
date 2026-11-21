@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Thanksgiving Feastfall</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #17100b;
+      color: #fff3dc;
+      font-family: Georgia, "Times New Roman", serif;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #hud {
+      position: fixed;
+      inset: 14px 14px auto;
+      display: flex;
+      gap: 12px;
+      pointer-events: none;
+    }
+    .stat {
+      min-width: 170px;
+      padding: 8px 12px;
+      border: 2px solid #d99b43;
+      border-radius: 8px;
+      background: rgba(62, 31, 18, .88);
+      font-weight: bold;
+      text-shadow: 1px 1px #000;
+    }
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background: rgba(35, 18, 10, .78);
+    }
+    #overlay.hidden { display: none; }
+    .panel {
+      width: min(760px, calc(100vw - 32px));
+      padding: 24px;
+      text-align: center;
+      border: 3px solid #d99b43;
+      border-radius: 14px;
+      background: #4b2718;
+      box-shadow: 0 16px 50px #000;
+    }
+    .panel h1 { margin-top: 0; color: #ffd276; }
+    #choices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .choice {
+      min-height: 150px;
+      padding: 16px 10px;
+      border: 2px solid #f0bd67;
+      border-radius: 10px;
+      background: #783d24;
+      color: white;
+      font: inherit;
+      cursor: pointer;
+    }
+    .choice:hover { background: #94502f; transform: translateY(-3px); }
+    .choice strong { display: block; margin-bottom: 12px; color: #ffe09a; }
+    #startBtn {
+      margin-top: 10px;
+      padding: 12px 30px;
+      border: 2px solid #ffe09a;
+      border-radius: 8px;
+      background: #b05a2b;
+      color: white;
+      font: bold 20px Georgia, serif;
+      cursor: pointer;
+    }
+    @media (max-width: 620px) {
+      #hud { flex-wrap: wrap; }
+      .stat { min-width: 145px; }
+      #choices { grid-template-columns: 1fr; }
+      .choice { min-height: 80px; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud">
+    <div class="stat">Feast: <span id="score">0</span></div>
+    <div class="stat">Health: <span id="health">100</span>/<span id="maxHealth">100</span></div>
+    <div class="stat">Boss: <span id="bossName">The Pie Wraith</span></div>
+  </div>
+  <div id="overlay">
+    <div class="panel">
+      <h1 id="overlayTitle">Thanksgiving Feastfall</h1>
+      <div id="overlayText">Gather lost Thanksgiving dishes and defeat four hungry bosses!</div>
+      <div id="choices"></div>
+      <button id="startBtn">Start Feast</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+    const overlayTitle = document.getElementById('overlayTitle');
+    const overlayText = document.getElementById('overlayText');
+    const choicesEl = document.getElementById('choices');
+    const startBtn = document.getElementById('startBtn');
+
+    const ui = {
+      score: document.getElementById('score'),
+      health: document.getElementById('health'),
+      maxHealth: document.getElementById('maxHealth'),
+      bossName: document.getElementById('bossName')
+    };
+
+    let w, h, running = false, paused = false, last = 0;
+    let score = 0, kills = 0, bossIndex = 0, spawnTimer = 0;
+    const keys = {};
+
+    const player = {
+      x: 0, y: 0, r: 18, speed: 230, health: 100, maxHealth: 100,
+      damage: 24, fireRate: 0.55, projectileSpeed: 520, projectileSize: 6,
+      multishot: 1, magnet: 130, invincible: 0, xp: 0
+    };
+
+    let enemies = [], projectiles = [], drops = [], particles = [];
+
+    const bosses = [
+      { name: 'The Pie Wraith', color: '#c96b35', r: 48, health: 250, speed: 72, damage: 18 },
+      { name: 'Cranberry King', color: '#a91d35', r: 58, health: 430, speed: 60, damage: 22 },
+      { name: 'Stuffing Golem', color: '#c9a66b', r: 68, health: 650, speed: 48, damage: 26 },
+      { name: 'Turkey Reaper', color: '#8a2d1f', r: 78, health: 950, speed: 55, damage: 32 }
+    ];
+
+    const abilityPool = [
+      { name: 'Pumpkin Cannon', text: '+35% projectile damage', apply: () => player.damage *= 1.35 },
+      { name: 'Fast Gravy', text: '+35% attack speed', apply: () => player.fireRate *= 0.65 },
+      { name: 'Extra Turkey', text: '+30 maximum health and heal', apply: () => { player.maxHealth += 30; player.health = Math.min(player.maxHealth, player.health + 30); } },
+      { name: 'Cranberry Burst', text: '+1 projectile per attack', apply: () => player.multishot += 1 },
+      { name: 'Mashed-Magnet', text: 'Double pickup attraction range', apply: () => player.magnet *= 2 },
+      { name: 'Golden Corn', text: '+25% movement speed', apply: () => player.speed *= 1.25 },
+      { name: 'Big Biscuit', text: 'Larger, faster projectiles', apply: () => { player.projectileSize += 3; player.projectileSpeed += 100; } },
+      { name: 'Second Helping', text: 'Regenerate 1 health each second', apply: () => { player.regen = (player.regen || 0) + 1; } }
+    ];
+
+    function resize() {
+      w = canvas.width = innerWidth * devicePixelRatio;
+      h = canvas.height = innerHeight * devicePixelRatio;
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+      w = innerWidth; h = innerHeight;
+      if (!player.x) { player.x = w / 2; player.y = h / 2; }
+    }
+    addEventListener('resize', resize);
+
+    function randomEdge(margin = 50) {
+      const side = Math.floor(Math.random() * 4);
+      if (side === 0) return { x: -margin, y: Math.random() * h };
+      if (side === 1) return { x: w + margin, y: Math.random() * h };
+      if (side === 2) return { x: Math.random() * w, y: -margin };
+      return { x: Math.random() * w, y: h + margin };
+    }
+
+    function spawnEnemy() {
+      const pos = randomEdge();
+      const level = 1 + bossIndex * 0.32;
+      enemies.push({
+        x: pos.x, y: pos.y, r: 12 + Math.random() * 5,
+        health: 35 * level, maxHealth: 35 * level,
+        speed: 75 + Math.random() * 25 + bossIndex * 8,
+        damage: 8 + bossIndex * 3, color: ['#7d9e50','#b9a87d','#a86f3a'][Math.floor(Math.random()*3)]
+      });
+    }
+
+    function spawnBoss() {
+      const pos = randomEdge(100);
+      const b = bosses[bossIndex];
+      enemies.push({ boss: true, x: pos.x, y: pos.y, r: b.r, health: b.health,
+        maxHealth: b.health, speed: b.speed, damage: b.damage, color: b.color,
+        hitFlash: 0, shootTimer: 1.5 });
+      ui.bossName.textContent = b.name;
+    }
+
+    function startGame() {
+      enemies = []; projectiles = []; drops = []; particles = [];
+      score = kills = bossIndex = spawnTimer = 0;
+      Object.assign(player, { x: w/2, y: h/2, health: 100, maxHealth: 100, damage: 24,
+        fireRate: 0.55, projectileSpeed: 520, projectileSize: 6, multishot: 1,
+        magnet: 130, invincible: 0, regen: 0, speed: 230 });
+      running = true; paused = false;
+      overlay.classList.add('hidden');
+      spawnBoss();
+      last = performance.now();
+      requestAnimationFrame(loop);
+    }
+
+    function distance(a, b) { return Math.hypot(a.x-b.x, a.y-b.y); }
+
+    function shoot() {
+      let nearest = null, nearestDist = Infinity;
+      for (const enemy of enemies) {
+        const d = distance(player, enemy);
+        if (d < nearestDist) { nearest = enemy; nearestDist = d; }
+      }
+      if (!nearest) return;
+      const base = Math.atan2(nearest.y-player.y, nearest.x-player.x);
+      const spread = 0.13;
+      for (let i=0;i<player.multishot;i++) {
+        const angle = base + (i-(player.multishot-1)/2)*spread;
+        projectiles.push({ x:player.x, y:player.y, r:player.projectileSize,
+          vx:Math.cos(angle)*player.projectileSpeed, vy:Math.sin(angle)*player.projectileSpeed,
+          damage:player.damage, life:2 });
+      }
+    }
+
+    let shootTimer = 0, regenTimer = 0;
+
+    function update(dt) {
+      if (!running || paused) return;
+      player.invincible -= dt; regenTimer += dt;
+      if (regenTimer >= 1) { player.health = Math.min(player.maxHealth, player.health + (player.regen || 0)); regenTimer = 0; }
+
+      let dx = 0, dy = 0;
+      if (keys.ArrowLeft || keys.a) dx--;
+      if (keys.ArrowRight || keys.d) dx++;
+      if (keys.ArrowUp || keys.w) dy--;
+      if (keys.ArrowDown || keys.s) dy++;
+      if (dx || dy) { const len=Math.hypot(dx,dy); player.x += dx/len*player.speed*dt; player.y += dy/len*player.speed*dt; }
+      player.x = Math.max(player.r, Math.min(w-player.r, player.x));
+      player.y = Math.max(player.r, Math.min(h-player.r, player.y));
+
+      shootTimer -= dt;
+      if (shootTimer <= 0) { shoot(); shootTimer = player.fireRate; }
+
+      spawnTimer -= dt;
+      if (spawnTimer <= 0 && !enemies.some(e => e.boss)) {
+        spawnEnemy(); spawnTimer = Math.max(.22, 1.1-bossIndex*.12);
+      }
+
+      for (let i=enemies.length-1;i>=0;i--) {
+        const e=enemies[i];
+        const angle=Math.atan2(player.y-e.y,player.x-e.x);
+        e.x += Math.cos(angle)*e.speed*dt;
+        e.y += Math.sin(angle)*e.speed*dt;
+        e.hitFlash = Math.max(0,(e.hitFlash||0)-dt);
+
+        if (e.boss) {
+          e.shootTimer -= dt;
+          if (e.shootTimer <= 0) {
+            const base=Math.atan2(player.y-e.y,player.x-e.x);
+            for (let j=-1;j<=1;j++) projectiles.push({ enemy:true,x:e.x,y:e.y,r:8,
+              vx:Math.cos(base+j*.25)*170,vy:Math.sin(base+j*.25)*170,damage:e.damage,life:5 });
+            e.shootTimer=1.8-bossIndex*.25;
+          }
+        }
+
+        if (distance(player,e)<player.r+e.r) {
+          if (player.invincible<=0) {
+            player.health -= e.damage; player.invincible=.7;
+            burst(player.x,player.y,'#ffb05c',10);
+          }
+          if (player.health<=0) endGame(false);
+        }
+      }
+
+      for (let i=projectiles.length-1;i>=0;i--) {
+        const p=projectiles[i]; p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt;
+        if (p.life<=0 || p.x<-30 || p.x>w+30 || p.y<-30 || p.y>h+30) { projectiles.splice(i,1); continue; }
+
+        if (p.enemy) {
+          if (distance(player,p)<player.r+p.r && player.invincible<=0) {
+            player.health-=p.damage; player.invincible=.6; projectiles.splice(i,1); burst(player.x,player.y,'#ffb05c',8);
+            if(player.health<=0) endGame(false);
+          }
+          continue;
+        }
+
+        for (let j=enemies.length-1;j>=0;j--) {
+          const e=enemies[j];
+          if (distance(p,e)<p.r+e.r) {
+            e.health-=p.damage; e.hitFlash=.08; burst(p.x,p.y,'#ffe09a',4);
+            projectiles.splice(i,1);
+            if(e.health<=0) {
+              if(e.boss) bossDefeated(); else { kills++; score+=10; drops.push({x:e.x,y:e.y,r:7,value:12}); }
+              enemies.splice(j,1);
+            }
+            break;
+          }
+        }
+      }
+
+      for (let i=drops.length-1;i>=0;i--) {
+        const d=drops[i];
+        if(distance(player,d)<player.magnet) {
+          const a=Math.atan2(player.y-d.y,player.x-d.x); d.x+=Math.cos(a)*300*dt; d.y+=Math.sin(a)*300*dt;
+        }
+        if(distance(player,d)<player.r+d.r) { score+=d.value; drops.splice(i,1); }
+      }
+
+      for (let i=particles.length-1;i>=0;i--) {
+        const p=particles[i]; p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt;
+        if(p.life<=0) particles.splice(i,1);
+      }
+      updateUI();
+    }
+
+    function burst(x,y,color,count) {
+      for(let i=0;i<count;i++) {
+        const a=Math.random()*Math.PI*2, s=40+Math.random()*100;
+        particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:.4+Math.random()*.4,color,r:2+Math.random()*3});
+      }
+    }
+
+    function bossDefeated() {
+      paused=true; score+=100*bossIndex+100; burst(player.x,player.y,'#ffd276',25);
+      if(bossIndex>=bosses.length-1) { endGame(true); return; }
+      bossIndex++;
+      showChoices();
+    }
+
+    function showChoices() {
+      overlay.classList.remove('hidden');
+      overlayTitle.textContent = 'Feast Upgrade!';
+      overlayText.textContent = 'Choose one Thanksgiving blessing:';
+      choicesEl.innerHTML=''; startBtn.style.display='none';
+      const choices=[...abilityPool].sort(()=>Math.random()-0.5).slice(0,3);
+      for(const ability of choices) {
+        const btn=document.createElement('button'); btn.className='choice';
+        btn.innerHTML=`<strong>${ability.name}</strong>${ability.text}`;
+        btn.onclick=()=>{
+          ability.apply(); overlay.classList.add('hidden'); startBtn.style.display='inline-block';
+          paused=false; spawnBoss(); last=performance.now();
+        };
+        choicesEl.appendChild(btn);
+      }
+    }
+
+    function endGame(victory) {
+      running=false;
+      overlay.classList.remove('hidden'); choicesEl.innerHTML=''; startBtn.style.display='inline-block';
+      overlayTitle.textContent=victory?'The Feast is Saved!':'The Feast Was Overrun';
+      overlayText.textContent=`Final feast score: ${score}`;
+      startBtn.textContent=victory?'Play Again':'Try Again';
+      ui.bossName.textContent=bosses[Math.min(bossIndex,bosses.length-1)].name;
+    }
+
+    function updateUI() {
+      ui.score.textContent=score;
+      ui.health.textContent=Math.max(0,Math.ceil(player.health));
+      ui.maxHealth.textContent=Math.ceil(player.maxHealth);
+    }
+
+    function draw() {
+      ctx.fillStyle='#3f5a2b'; ctx.fillRect(0,0,w,h);
+      ctx.fillStyle='rgba(255,220,150,.08)';
+      for(let x=-20;x<w;x+=70) for(let y=-20;y<h;y+=70) {
+        ctx.beginPath();ctx.arc(x+(y%140),y,12,0,Math.PI*2);ctx.fill();
+      }
+
+      ctx.fillStyle='#c78e45';
+      for(const d of drops){ctx.beginPath();ctx.arc(d.x,d.y,d.r,0,Math.PI*2);ctx.fill();}
+
+      for(const p of particles){ctx.globalAlpha=Math.max(0,p.life*2);ctx.fillStyle=p.color;ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;}
+
+      for(const p of projectiles){
+        ctx.fillStyle=p.enemy?'#ffb45e':'#fff1a8';ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();
+      }
+
+      for(const e of enemies){
+        ctx.fillStyle=e.hitFlash>0?'#fff':e.color;
+        ctx.beginPath();ctx.arc(e.x,e.y,e.r,0,Math.PI*2);ctx.fill();
+        ctx.strokeStyle='#392118';ctx.lineWidth=3;ctx.stroke();
+        if(e.boss){
+          ctx.fillStyle='#4b1b18';ctx.fillRect(e.x-e.r,e.y-e.r-18,e.r*2,8);
+          ctx.fillStyle='#e4b33f';ctx.fillRect(e.x-e.r,e.y-e.r-18,e.r*2*Math.max(0,e.health/e.maxHealth),8);
+        } else {
+          ctx.fillStyle='#2b1a13';ctx.beginPath();ctx.arc(e.x-e.r*.35,e.y-e.r*.15,3,0,7);ctx.arc(e.x+e.r*.35,e.y-e.r*.15,3,0,7);ctx.fill();
+        }
+      }
+
+      ctx.save();ctx.translate(player.x,player.y);
+      ctx.fillStyle=player.invincible>0?'#ffe6ae':'#f3a653';ctx.beginPath();ctx.arc(0,0,player.r,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#fff0cf';ctx.beginPath();ctx.arc(-5,-7,4,0,7);ctx.arc(7,-7,4,0,7);ctx.fill();
+      ctx.fillStyle='#5a3020';ctx.beginPath();ctx.arc(-5,-7,2,0,7);ctx.arc(7,-7,2,0,7);ctx.fill();
+      ctx.restore();
+    }
+
+    function loop(now) {
+      if(!running)return;
+      const dt=Math.min(.033,(now-last)/1000||0);last=now;
+      update(dt);draw();
+      requestAnimationFrame(loop);
+    }
+
+    addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();});
+    addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;});
+    startBtn.onclick=()=>{startGame();startBtn.textContent='Start Feast';};
+
+    resize(); updateUI(); draw();
+  </script>
+</body>
+</html>
